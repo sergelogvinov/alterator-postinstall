@@ -1,0 +1,129 @@
+#!/bin/sh
+
+alterator_api_version=1
+po_domain="alterator-postinstall"
+postinstall_dir="/usr/share/install2/postinstall.d"
+preinstall_dir="/usr/share/install2/preinstall.d"
+
+DESTDIR="/"
+CHROOT_EXE=""
+
+if [ -d "${ALTERATOR_DESTDIR:-}" ]; then
+    DESTDIR="$ALTERATOR_DESTDIR"
+    CHROOT_EXE="chroot $DESTDIR"
+fi
+
+. alterator-sh-functions
+. shell-config
+
+postinstall_file="$(mktemp --quiet --tmpdir postinstall.XXXXX)"
+curl_opt_cmn="--connect-timeout 2 --max-time 2 --insecure --silent \
+                 --output $postinstall_file \
+                 --write-out %{http_code}"
+curl_opt_ftp="$curl_opt_cmn --ftp-pasv"
+curl_opt_http="$curl_opt_cmn"
+
+get_comps()
+{
+    local url=$1
+    local ret=-1
+    local curl_opt=
+    local ret_code="000"
+    local is_http=$(expr match "$url" '\(http\)')
+    local is_ftp=$(expr match "$url" '\(ftp\)')
+
+    [ -z "$url" ] && return $ret
+    [ -z "$postinstall_file" ] && return $ret
+    [ -x "/usr/bin/curl" ] || return $ret
+
+    if [ -n "$is_ftp}" ]; then
+        curl_opt="$curl_opt_ftp"
+    elif [ -n "$is_http" ]; then
+        curl_opt="$curl_opt_http"
+    else
+        return $ret
+    fi
+
+    for i in 1 2 3 4 5
+     do
+        ret_code="$(curl $curl_opt --url "$url")"
+
+        if [ -n "$is_ftp" ]; then
+            [ $ret_code -eq 226 ] && ret=0
+        elif [ -n "$is_http" ]; then
+            [ $ret_code -eq 200 ] && ret=0
+        fi
+
+        [ "$ret" -eq "0" ] && break
+        sleep 2
+        #printf '%s Retry::CURL:%s CODE:%s:%s\n' "$(date +%T)" "$in_url" "$ret_code" "$ret" >&2
+        #ls -la $postinstall_file >&2
+    done
+
+    return $ret
+}
+
+on_message()
+{
+  case $in__objects in
+    firsttime)
+        case "$in_action" in
+            write)
+                case "$in_method" in
+                    url)
+                        local destfile=$DESTDIR/etc/firsttime.d/auto_postinstall_url.sh
+
+                        if get_comps "$in_url" ; then
+                            cp $postinstall_file $destfile
+                            chmod a+x $destfile
+                            printf '%s url:%s - OK\n' "$(date +%T)" "$in_url" >&2
+                        else
+                            printf '%s url:%s - FAILED\n' "$(date +%T)" "$in_url" >&2
+                        fi
+                    ;;
+                    conf)
+                        local destfile=$DESTDIR/etc/firsttime.d/auto_postinstall_conf.sh
+
+                        echo "#!/bin/sh" > $destfile
+                        echo "# Alterator-postinstall create it" >> $destfile
+                        echo "$in_cmd"  >> $destfile
+                        chmod a+x $destfile
+                        printf '%s cmd:%s - OK\n' "$(date +%T)" "$in_cmd" >&2
+                    ;;
+                esac
+            ;;
+        esac
+    ;;
+    laststate)
+        case "$in_action" in
+            write)
+                case "$in_method" in
+                    url)
+                        local destfile=$postinstall_dir/99-auto_postinstall_url.sh
+
+                        if get_comps "$in_url" ; then
+                            cp $postinstall_file $destfile
+                            chmod a+x $destfile
+                            printf '%s url:%s - OK\n' "$(date +%T)" "$in_url" >&2
+                        else
+                            printf '%s url:%s - FAILED\n' "$(date +%T)" "$in_url" >&2
+                        fi
+                    ;;
+                    conf)
+                        local destfile=$postinstall_dir/99-auto_postinstall_conf.sh
+
+                        echo "#!/bin/sh" > $destfile
+                        echo "# Alterator-postinstall create it" >> $destfile
+                        echo "$in_cmd"  >> $destfile
+                        chmod a+x $destfile
+                        printf '%s cmd:%s - OK\n' "$(date +%T)" "$in_cmd" >&2
+                    ;;
+                esac
+            ;;
+        esac
+    ;;
+  esac
+} 
+
+message_loop
+
